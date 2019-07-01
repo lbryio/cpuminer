@@ -58,6 +58,14 @@ enum {
 #define likely(expr) (expr)
 #endif
 
+#if defined(_MSC_VER)
+#define THREADLOCAL __declspec(thread)
+#elif defined(__GNUC__)
+#define THREADLOCAL __thread
+#else
+#define THREADLOCAL
+#endif
+
 #ifndef ARRAY_SIZE
 #define ARRAY_SIZE(arr) (sizeof(arr) / sizeof((arr)[0]))
 #endif

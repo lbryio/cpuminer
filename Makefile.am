@@ -5,6 +5,8 @@ else
 JANSSON_INCLUDES=
 endif
 
+SHA3_INCLUDES= -I$(top_srcdir)/sha3
+
 EXTRA_DIST	= example-cfg.json nomacro.pl
 
 SUBDIRS		= compat
@@ -15,7 +17,8 @@ dist_man_MANS	= minerd.1
 
 minerd_SOURCES	= elist.h miner.h compat.h \
 		  cpu-miner.c util.c \
-		  sha2.c scrypt.c
+		  sha2.c scrypt.c \
+		  sph_sha2.c sph_sha2big.c sph_ripemd.c lbry.c
 if USE_ASM
 if ARCH_x86
 minerd_SOURCES += sha2-x86.S scrypt-x86.S
@@ -33,5 +36,4 @@ endif
 minerd_LDFLAGS	= $(PTHREAD_FLAGS)
 minerd_LDADD	= @LIBCURL@ @JANSSON_LIBS@ @PTHREAD_LIBS@ @WS2_LIBS@
 minerd_CFLAGS	= -fno-strict-aliasing
-minerd_CPPFLAGS	= @LIBCURL_CPPFLAGS@ $(JANSSON_INCLUDES) $(PTHREAD_FLAGS)
-
+minerd_CPPFLAGS	= @LIBCURL_CPPFLAGS@ $(JANSSON_INCLUDES) $(SHA3_INCLUDES) $(PTHREAD_FLAGS)
