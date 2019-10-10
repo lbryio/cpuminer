@@ -102,10 +102,14 @@ struct workio_cmd {
 
 enum algos {
 	ALGO_LBRY,		/* lbry */
+    ALGO_SCRYPT,	/* scrypt(1024,1,1) */
+    ALGO_SHA256D,	/* SHA-256d */
 };
 
 static const char *algo_names[] = {
-	[ALGO_LBRY]		= "lbry",
+	[ALGO_LBRY]	=    "lbry",
+    [ALGO_SCRYPT] =  "scrypt",
+    [ALGO_SHA256D] = "sha256d",
 };
 
 bool opt_debug = false;
@@ -118,6 +122,7 @@ bool have_gbt = true;
 bool allow_getwork = false;
 bool want_stratum = false;
 bool have_stratum = false;
+bool want_segwit = false;
 bool use_syslog = false;
 static bool opt_background = false;
 static bool opt_quiet = false;
@@ -168,7 +173,7 @@ Usage: " PROGRAM_NAME " [OPTIONS]\n\
 Options:\n\
   -a, --algo=ALGO       specify the algorithm to use\n\
                           lbry      (default)\n\
-                          scrypt    scrypt(1024, 1, 1) (default)\n\
+                          scrypt    scrypt(1024, 1, 1)\n\
                           scrypt:N  scrypt(N, 1, 1)\n\
                           sha256d   SHA-256d\n\
   -o, --url=URL         URL of mining server\n\
@@ -187,11 +192,14 @@ Options:\n\
       --coinbase-addr=ADDR  payout address for solo mining\n\
       --coinbase-sig=TEXT  data to insert in the coinbase when possible\n\
       --no-longpoll     disable long polling support\n\
+      --getwork         enable getwork support\n\
       --no-gbt          disable getblocktemplate support\n\
+      --stratum         enable X-Stratum support\n\
       --no-redirect     ignore requests to change the URL of the mining server\n\
   -q, --quiet           disable per-thread hashmeter output\n\
   -D, --debug           enable debug output\n\
-  -P, --protocol-dump   verbose dump of protocol-level activities\n"
+  -P, --protocol-dump   verbose dump of protocol-level activities\n\
+      --segwit          include Segwit transactions in the mined data\n"
 #ifdef HAVE_SYSLOG_H
 "\
   -S, --syslog          use system log for output messages\n"
@@ -229,8 +237,10 @@ static struct option const options[] = {
 	{ "debug", 0, NULL, 'D' },
 	{ "help", 0, NULL, 'h' },
 	{ "no-gbt", 0, NULL, 1011 },
+	{ "getwork", 0, NULL, 1010 },
 	{ "no-longpoll", 0, NULL, 1003 },
 	{ "no-redirect", 0, NULL, 1009 },
+	{ "stratum", 0, NULL, 1007 },
 	{ "pass", 1, NULL, 'p' },
 	{ "protocol-dump", 0, NULL, 'P' },
 	{ "proxy", 1, NULL, 'x' },
@@ -238,6 +248,7 @@ static struct option const options[] = {
 	{ "retries", 1, NULL, 'r' },
 	{ "retry-pause", 1, NULL, 'R' },
 	{ "scantime", 1, NULL, 's' },
+    { "segwit", 0, NULL, 1016 },
 #ifdef HAVE_SYSLOG_H
 	{ "syslog", 0, NULL, 'S' },
 #endif
@@ -314,6 +325,30 @@ static bool jobj_binary(const json_t *obj, const char *key,
 	return true;
 }
 
+static bool work_decode(const json_t *val, struct work *work)
+{
+    int i;
+
+    if (unlikely(!jobj_binary(val, "data", work->data, sizeof(work->data)))) {
+        applog(LOG_ERR, "JSON invalid data");
+        goto err_out;
+    }
+    if (unlikely(!jobj_binary(val, "target", work->target, sizeof(work->target)))) {
+        applog(LOG_ERR, "JSON invalid target");
+        goto err_out;
+    }
+
+    for (i = 0; i < ARRAY_SIZE(work->data); i++)
+        work->data[i] = le32dec(work->data + i);
+    for (i = 0; i < ARRAY_SIZE(work->target); i++)
+        work->target[i] = le32dec(work->target + i);
+
+    return true;
+
+    err_out:
+    return false;
+}
+
 static bool gbt_work_decode(const json_t *val, struct work *work)
 {
 	int i, n;
@@ -322,7 +357,7 @@ static bool gbt_work_decode(const json_t *val, struct work *work)
 	uint32_t target[8];
 	uint32_t claimtrie[8];
 	int cbtx_size;
-	unsigned char *cbtx = NULL;
+	unsigned char *cbtx = NULL, *cbtx_txid = NULL;
 	int tx_count, tx_size;
 	unsigned char txc_vi[9];
 	unsigned char (*merkle_tree)[32] = NULL;
@@ -372,7 +407,7 @@ static bool gbt_work_decode(const json_t *val, struct work *work)
 	}
 	version = json_integer_value(tmp);
 
-	if (unlikely(!jobj_binary(val, "claimtrie", claimtrie, sizeof(claimtrie)))) {
+	if (opt_algo == ALGO_LBRY && unlikely(!jobj_binary(val, "claimtrie", claimtrie, sizeof(claimtrie)))) {
 		applog(LOG_ERR, "JSON invalid claimtrie");
 		goto out;
 	}
@@ -423,6 +458,23 @@ static bool gbt_work_decode(const json_t *val, struct work *work)
 			applog(LOG_ERR, "JSON invalid coinbasetxn");
 			goto out;
 		}
+		bool hasWitness = *(uint16_t*)(cbtx + 4) == 256;
+        if (hasWitness && coinbase_append) {
+            // TODO: make this work by using index 43 instead of 41 in the coinbase_append handler below
+            // and then would we pass it in as one of our supported capabilities? Sure.
+            applog(LOG_ERR, "This tool cannot append onto segwit transactions");
+            goto out;
+        }
+        if (hasWitness) {
+            cbtx_hex = json_string_value(json_object_get(tmp, "txid"));
+            size_t txid_size = strlen(cbtx_hex) / 2;
+            cbtx_txid = malloc(txid_size + 1);
+            if (txid_size != 32 || !hex2bin(cbtx_txid, cbtx_hex, txid_size)) {
+                applog(LOG_ERR, "Invalid txid on coinbase");
+                goto out;
+            }
+            memrev(cbtx_txid, 32);
+        }
 	} else {
 		int64_t cbvalue;
 		if (!pk_script_size) {
@@ -553,7 +605,10 @@ static bool gbt_work_decode(const json_t *val, struct work *work)
 
 	/* generate merkle root */
 	merkle_tree = malloc(32 * ((1 + tx_count + 1) & ~1));
-	sha256d(merkle_tree[0], cbtx, cbtx_size);
+	if (cbtx_txid)
+	    memcpy(merkle_tree[0], cbtx_txid, 32);
+	else
+	    sha256d(merkle_tree[0], cbtx, cbtx_size);
 	for (i = 0; i < tx_count; i++) {
 		tmp = json_array_get(txa, i);
 		const char *tx_hex = json_string_value(json_object_get(tmp, "data"));
@@ -590,20 +645,24 @@ static bool gbt_work_decode(const json_t *val, struct work *work)
 	}
 
 	/* assemble block header */
-        memset(work->data, 0x00, sizeof(work->data));
 	work->data[0] = swab32(version);
 	for (i = 0; i < 8; i++)
 		work->data[8 - i] = le32dec(prevhash + i);
 	for (i = 0; i < 8; i++)
 		work->data[9 + i] = be32dec((uint32_t *)merkle_tree[0] + i);
-	for (i = 0; i < 8; i++)
+	int offset = 0;
+	if (opt_algo == ALGO_LBRY) {
+        for (i = 0; i < 8; i++)
             work->data[24 - i] = le32dec(claimtrie + i);
-        work->data[25] = swab32(curtime);
-	work->data[26] = le32dec(&bits);
-	work->data[28] = 0x80000000;
-	work->data[39] = 0x00000280;
+        offset = 8;
+    }
+    work->data[17 + offset] = swab32(curtime);
+	work->data[18 + offset] = le32dec(&bits);
+    memset(work->data + 19 + offset, 0x00, 52);
+	work->data[20 + offset] = 0x80000000;
+	work->data[31 + offset] = 0x00000280;
 
-        if (unlikely(!jobj_binary(val, "target", target, sizeof(target)))) {
+    if (unlikely(!jobj_binary(val, "target", target, sizeof(target)))) {
 		applog(LOG_ERR, "JSON invalid target");
 		goto out;
 	}
@@ -637,13 +696,14 @@ static bool gbt_work_decode(const json_t *val, struct work *work)
 
 out:
 	free(cbtx);
+	free(cbtx_txid);
 	free(merkle_tree);
 	return rc;
 }
 
 static void share_result(int result, const char *reason)
 {
-	char s[345];
+	char s[370];
 	double hashrate;
 	int i;
 
@@ -670,7 +730,7 @@ static bool submit_upstream_work(CURL *curl, struct work *work)
 {
 	json_t *val, *res, *reason;
 	char data_str[2 * sizeof(work->data) + 1];
-	char s[345];
+	char s[370];
 	int i;
 	bool rc = false;
 
@@ -707,20 +767,21 @@ static bool submit_upstream_work(CURL *curl, struct work *work)
 
 		for (i = 0; i < ARRAY_SIZE(work->data); i++)
 			be32enc(work->data + i, work->data[i]);
-		bin2hex(data_str, (unsigned char *)work->data, 112);
+		int offset = opt_algo == ALGO_LBRY ? 112 : 80;
+		bin2hex(data_str, (unsigned char *)work->data, offset);
 		if (work->workid) {
 			char *params;
 			val = json_object();
 			json_object_set_new(val, "workid", json_string(work->workid));
 			params = json_dumps(val, 0);
 			json_decref(val);
-			req = malloc(160 + 2*112 + strlen(work->txs) + strlen(params));
+			req = malloc(160 + 2*offset + strlen(work->txs) + strlen(params));
 			sprintf(req,
 				"{\"method\": \"submitblock\", \"params\": [\"%s%s\", %s], \"id\":1}\r\n",
 				data_str, work->txs, params);
 			free(params);
 		} else {
-			req = malloc(160 + 2*112 + strlen(work->txs));
+			req = malloc(160 + 2*offset + strlen(work->txs));
 			sprintf(req,
 				"{\"method\": \"submitblock\", \"params\": [\"%s%s\"], \"id\":1}\r\n",
 				data_str, work->txs);
@@ -786,14 +847,15 @@ static const char *getwork_req =
 	"{\"method\": \"getwork\", \"params\": [], \"id\":0}\r\n";
 
 #define GBT_CAPABILITIES "[\"coinbasetxn\", \"coinbasevalue\", \"longpoll\", \"workid\"]"
+#define GBT_RULES "[\"segwit\"]"
+#define GBT_NO_RULES "[]"
 
 static const char *gbt_req =
 	"{\"method\": \"getblocktemplate\", \"params\": [{\"capabilities\": "
-	GBT_CAPABILITIES "}], \"id\":0}\r\n";
-
+	GBT_CAPABILITIES ", \"rules\": " GBT_NO_RULES "}], \"id\":0}\r\n";
 static const char *gbt_lp_req =
 	"{\"method\": \"getblocktemplate\", \"params\": [{\"capabilities\": "
-	GBT_CAPABILITIES "}], \"id\":0}\r\n";
+	GBT_CAPABILITIES ", \"rules\": %s, \"longpollid\": \"%s\"}], \"id\":0}\r\n";
 
 static bool get_upstream_work(CURL *curl, struct work *work)
 {
@@ -831,11 +893,14 @@ start:
 	if (!val)
 		return false;
 
-        rc = gbt_work_decode(json_object_get(val, "result"), work);
-        if (!rc) {
-                json_decref(val);
-		goto start;
-	}
+	if (have_gbt) {
+		rc = gbt_work_decode(json_object_get(val, "result"), work);
+		if (!have_gbt) {
+			json_decref(val);
+			goto start;
+		}
+	} else
+		rc = work_decode(json_object_get(val, "result"), work);
 
 	if (opt_debug && rc) {
 		timeval_subtract(&diff, &tv_end, &tv_start);
@@ -1074,8 +1139,14 @@ static void stratum_gen_work(struct stratum_ctx *sctx, struct work *work)
 		free(xnonce2str);
 	}
 
-        diff_to_target(work->target, sctx->job.diff);
+	if (opt_algo == ALGO_SCRYPT)
+		diff_to_target(work->target, sctx->job.diff / 65536.0);
+	else
+		diff_to_target(work->target, sctx->job.diff);
 }
+
+extern int scanhash_lbry(int thr_id, uint32_t *pdata, const uint32_t *ptarget,
+                  uint32_t max_nonce, uint64_t *hashes_done);
 
 static void *miner_thread(void *userdata)
 {
@@ -1105,6 +1176,17 @@ static void *miner_thread(void *userdata)
 		affine_to_cpu(thr_id, thr_id % num_processors);
 	}
 	
+	if (opt_algo == ALGO_SCRYPT) {
+		scratchbuf = scrypt_buffer_alloc(opt_scrypt_n);
+		if (!scratchbuf) {
+			applog(LOG_ERR, "scrypt buffer allocation failed");
+			pthread_mutex_lock(&applog_lock);
+			exit(1);
+		}
+	}
+
+	int offset = opt_algo == ALGO_LBRY ? 8 : 0;
+
 	while (1) {
 		unsigned long hashes_done;
 		struct timeval tv_start, tv_end, diff;
@@ -1115,7 +1197,7 @@ static void *miner_thread(void *userdata)
 			while (time(NULL) >= g_work_time + 120)
 				sleep(1);
 			pthread_mutex_lock(&g_work_lock);
-			if (work.data[19] >= end_nonce && !memcmp(work.data, g_work.data, 76))
+			if (work.data[19 + offset] >= end_nonce && !memcmp(work.data, g_work.data, 76 + offset * 4))
 				stratum_gen_work(&stratum, &g_work);
 		} else {
 			int min_scantime = have_longpoll ? LP_SCANTIME : opt_scantime;
@@ -1123,7 +1205,7 @@ static void *miner_thread(void *userdata)
 			pthread_mutex_lock(&g_work_lock);
 			if (!have_stratum &&
 			    (time(NULL) - g_work_time >= min_scantime ||
-			     work.data[27] >= end_nonce)) {
+			     work.data[19 + offset] >= end_nonce)) {
 				work_free(&g_work);
 				if (unlikely(!get_work(mythr, &g_work))) {
 					applog(LOG_ERR, "work retrieval failed, exiting "
@@ -1138,13 +1220,12 @@ static void *miner_thread(void *userdata)
 				continue;
 			}
 		}
-		/* if (memcmp(work.data, g_work.data, 76)) { */
-		if (memcmp(work.data, g_work.data, 108)) {
+		if (memcmp(work.data, g_work.data, 76 + offset * 4)) {
 			work_free(&work);
 			work_copy(&work, &g_work);
-			work.data[27] = 0xffffffffU / opt_n_threads * thr_id;
+			work.data[19 + offset] = 0xffffffffU / opt_n_threads * thr_id;
 		} else
-			work.data[27]++;
+			work.data[19 + offset]++;
 		pthread_mutex_unlock(&g_work_lock);
 		work_restart[thr_id].restart = 0;
 
@@ -1158,9 +1239,15 @@ static void *miner_thread(void *userdata)
 		if (max64 <= 0) {
 			switch (opt_algo) {
 			case ALGO_LBRY:
-                                max64 = 0x1fffff;
+                max64 = 0x1fffff;
 				break;
-			}
+            case ALGO_SCRYPT:
+                max64 = opt_scrypt_n < 16 ? 0x3ffff : 0x3fffff / opt_scrypt_n;
+                break;
+            case ALGO_SHA256D:
+                max64 = 0x1fffff;
+                break;
+            }
 		}
 		if (work.data[19] + max64 > end_nonce)
 			max_nonce = end_nonce;
@@ -1174,10 +1261,18 @@ static void *miner_thread(void *userdata)
 		switch (opt_algo) {
 		case ALGO_LBRY:
 			rc = scanhash_lbry(thr_id, work.data, work.target,
-                                           max_nonce, &hashes_done);
+                               max_nonce, &hashes_done);
 			break;
+        case ALGO_SCRYPT:
+            rc = scanhash_scrypt(thr_id, work.data, scratchbuf, work.target,
+                                 max_nonce, &hashes_done, opt_scrypt_n);
+            break;
 
-                default:
+        case ALGO_SHA256D:
+            rc = scanhash_sha256d(thr_id, work.data, work.target,
+                                  max_nonce, &hashes_done);
+            break;
+        default:
 			/* should never happen */
 			goto out;
 		}
@@ -1271,8 +1366,8 @@ start:
 		int err;
 
 		if (have_gbt) {
-			req = malloc(strlen(gbt_lp_req) + strlen(lp_id) + 1);
-			sprintf(req, gbt_lp_req, lp_id);
+			req = malloc(strlen(gbt_lp_req) + strlen(lp_id) + 1 + strlen(GBT_RULES));
+			sprintf(req, gbt_lp_req, want_segwit ? GBT_RULES : GBT_NO_RULES, lp_id);
 		}
 		val = json_rpc_call(curl, lp_url, rpc_userpass,
 				    req ? req : getwork_req, &err,
@@ -1285,13 +1380,15 @@ start:
 		}
 		if (likely(val)) {
 			bool rc;
-			//applog(LOG_INFO, "LONGPOLL pushed new work");
 			res = json_object_get(val, "result");
 			soval = json_object_get(res, "submitold");
 			submit_old = soval ? json_is_true(soval) : false;
 			pthread_mutex_lock(&g_work_lock);
 			work_free(&g_work);
-                        rc = gbt_work_decode(res, &g_work);
+			if (have_gbt)
+				rc = gbt_work_decode(res, &g_work);
+			else
+				rc = work_decode(res, &g_work);
 			if (rc) {
 				time(&g_work_time);
 				restart_threads();
@@ -1504,6 +1601,15 @@ static void parse_arg(int key, char *arg, char *pname)
 					opt_algo = i;
 					break;
 				}
+				if (arg[v] == ':' && i == ALGO_SCRYPT) {
+					char *ep;
+					v = strtol(arg+v+1, &ep, 10);
+					if (*ep || v & (v-1) || v < 2)
+						continue;
+					opt_algo = i;
+					opt_scrypt_n = v;
+					break;
+				}
 			}
 		}
 		if (i == ARRAY_SIZE(algo_names)) {
@@ -1677,13 +1783,13 @@ static void parse_arg(int key, char *arg, char *pname)
 		want_longpoll = false;
 		break;
 	case 1007:
-		want_stratum = false;
+		want_stratum = true;
 		break;
 	case 1009:
 		opt_redirect = false;
 		break;
 	case 1010:
-		allow_getwork = false;
+		allow_getwork = true;
 		break;
 	case 1011:
 		have_gbt = false;
@@ -1703,6 +1809,9 @@ static void parse_arg(int key, char *arg, char *pname)
 		}
 		strcpy(coinbase_sig, arg);
 		break;
+    case 1016:
+        want_segwit = true;
+        break;
 	case 'S':
 		use_syslog = true;
 		break;
