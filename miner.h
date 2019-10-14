@@ -228,6 +228,8 @@ struct stratum_job {
 	unsigned char ntime[4];
 	bool clean;
 	double diff;
+    unsigned char claimhash[32];
+	bool needs_claimhash;
 };
 
 struct stratum_ctx {

@@ -102,14 +102,14 @@ struct workio_cmd {
 
 enum algos {
 	ALGO_LBRY,		/* lbry */
-    ALGO_SCRYPT,	/* scrypt(1024,1,1) */
-    ALGO_SHA256D,	/* SHA-256d */
+	ALGO_SCRYPT,	/* scrypt(1024,1,1) */
+	ALGO_SHA256D,	/* SHA-256d */
 };
 
 static const char *algo_names[] = {
-	[ALGO_LBRY]	=    "lbry",
-    [ALGO_SCRYPT] =  "scrypt",
-    [ALGO_SHA256D] = "sha256d",
+	[ALGO_LBRY]	=	"lbry",
+	[ALGO_SCRYPT] =  "scrypt",
+	[ALGO_SHA256D] = "sha256d",
 };
 
 bool opt_debug = false;
@@ -122,7 +122,6 @@ bool have_gbt = true;
 bool allow_getwork = false;
 bool want_stratum = false;
 bool have_stratum = false;
-bool want_segwit = false;
 bool use_syslog = false;
 static bool opt_background = false;
 static bool opt_quiet = false;
@@ -186,7 +185,7 @@ Options:\n\
   -r, --retries=N       number of times to retry if a network call fails\n\
                           (default: retry indefinitely)\n\
   -R, --retry-pause=N   time to pause between retries, in seconds (default: 30)\n\
-  -T, --timeout=N       timeout for long polling, in seconds (default: none)\n\
+  -T, --timeout=N       timeout for long polling, in seconds (default: 70sec)\n\
   -s, --scantime=N      upper bound on time spent scanning current work when\n\
                           long polling is unavailable, in seconds (default: 5)\n\
       --coinbase-addr=ADDR  payout address for solo mining\n\
@@ -198,8 +197,7 @@ Options:\n\
       --no-redirect     ignore requests to change the URL of the mining server\n\
   -q, --quiet           disable per-thread hashmeter output\n\
   -D, --debug           enable debug output\n\
-  -P, --protocol-dump   verbose dump of protocol-level activities\n\
-      --segwit          include Segwit transactions in the mined data\n"
+  -P, --protocol-dump   verbose dump of protocol-level activities\n"
 #ifdef HAVE_SYSLOG_H
 "\
   -S, --syslog          use system log for output messages\n"
@@ -248,7 +246,6 @@ static struct option const options[] = {
 	{ "retries", 1, NULL, 'r' },
 	{ "retry-pause", 1, NULL, 'R' },
 	{ "scantime", 1, NULL, 's' },
-    { "segwit", 0, NULL, 1016 },
 #ifdef HAVE_SYSLOG_H
 	{ "syslog", 0, NULL, 'S' },
 #endif
@@ -327,26 +324,26 @@ static bool jobj_binary(const json_t *obj, const char *key,
 
 static bool work_decode(const json_t *val, struct work *work)
 {
-    int i;
+	int i;
 
-    if (unlikely(!jobj_binary(val, "data", work->data, sizeof(work->data)))) {
-        applog(LOG_ERR, "JSON invalid data");
-        goto err_out;
-    }
-    if (unlikely(!jobj_binary(val, "target", work->target, sizeof(work->target)))) {
-        applog(LOG_ERR, "JSON invalid target");
-        goto err_out;
-    }
+	if (unlikely(!jobj_binary(val, "data", work->data, sizeof(work->data)))) {
+		applog(LOG_ERR, "JSON invalid data");
+		goto err_out;
+	}
+	if (unlikely(!jobj_binary(val, "target", work->target, sizeof(work->target)))) {
+		applog(LOG_ERR, "JSON invalid target");
+		goto err_out;
+	}
 
-    for (i = 0; i < ARRAY_SIZE(work->data); i++)
-        work->data[i] = le32dec(work->data + i);
-    for (i = 0; i < ARRAY_SIZE(work->target); i++)
-        work->target[i] = le32dec(work->target + i);
+	for (i = 0; i < ARRAY_SIZE(work->data); i++)
+		work->data[i] = le32dec(work->data + i);
+	for (i = 0; i < ARRAY_SIZE(work->target); i++)
+		work->target[i] = le32dec(work->target + i);
 
-    return true;
+	return true;
 
-    err_out:
-    return false;
+err_out:
+	return false;
 }
 
 static bool gbt_work_decode(const json_t *val, struct work *work)
@@ -449,7 +446,6 @@ static bool gbt_work_decode(const json_t *val, struct work *work)
 
 	/* build coinbase transaction */
 	tmp = json_object_get(val, "coinbasetxn");
-
 	if (tmp) {
 		const char *cbtx_hex = json_string_value(json_object_get(tmp, "data"));
 		cbtx_size = cbtx_hex ? strlen(cbtx_hex) / 2 : 0;
@@ -459,22 +455,22 @@ static bool gbt_work_decode(const json_t *val, struct work *work)
 			goto out;
 		}
 		bool hasWitness = *(uint16_t*)(cbtx + 4) == 256;
-        if (hasWitness && coinbase_append) {
-            // TODO: make this work by using index 43 instead of 41 in the coinbase_append handler below
-            // and then would we pass it in as one of our supported capabilities? Sure.
-            applog(LOG_ERR, "This tool cannot append onto segwit transactions");
-            goto out;
-        }
-        if (hasWitness) {
-            cbtx_hex = json_string_value(json_object_get(tmp, "txid"));
-            size_t txid_size = strlen(cbtx_hex) / 2;
-            cbtx_txid = malloc(txid_size + 1);
-            if (txid_size != 32 || !hex2bin(cbtx_txid, cbtx_hex, txid_size)) {
-                applog(LOG_ERR, "Invalid txid on coinbase");
-                goto out;
-            }
-            memrev(cbtx_txid, 32);
-        }
+		if (hasWitness && coinbase_append) {
+			// TODO: make this work by using index 43 instead of 41 in the coinbase_append handler below
+			// and then would we pass it in as one of our supported capabilities? Sure.
+			applog(LOG_ERR, "This tool cannot append onto segwit transactions");
+			goto out;
+		}
+		if (hasWitness) {
+			cbtx_hex = json_string_value(json_object_get(tmp, "txid"));
+			size_t txid_size = strlen(cbtx_hex) / 2;
+			cbtx_txid = malloc(txid_size + 1);
+			if (txid_size != 32 || !hex2bin(cbtx_txid, cbtx_hex, txid_size)) {
+				applog(LOG_ERR, "Invalid txid on coinbase");
+				goto out;
+			}
+			memrev(cbtx_txid, 32);
+		}
 	} else {
 		int64_t cbvalue;
 		if (!pk_script_size) {
@@ -585,7 +581,7 @@ static bool gbt_work_decode(const json_t *val, struct work *work)
 		if (xsig_len) {
 			unsigned char *ssig_end = cbtx + 42 + cbtx[41];
 			int push_len = cbtx[41] + xsig_len < 76 ? 1 :
-			               cbtx[41] + 2 + xsig_len > 100 ? 0 : 2;
+						   cbtx[41] + 2 + xsig_len > 100 ? 0 : 2;
 			n = xsig_len + push_len;
 			memmove(ssig_end + n, ssig_end, cbtx_size - 42 - cbtx[41]);
 			cbtx[41] += n;
@@ -606,9 +602,9 @@ static bool gbt_work_decode(const json_t *val, struct work *work)
 	/* generate merkle root */
 	merkle_tree = malloc(32 * ((1 + tx_count + 1) & ~1));
 	if (cbtx_txid)
-	    memcpy(merkle_tree[0], cbtx_txid, 32);
+		memcpy(merkle_tree[0], cbtx_txid, 32);
 	else
-	    sha256d(merkle_tree[0], cbtx, cbtx_size);
+		sha256d(merkle_tree[0], cbtx, cbtx_size);
 	for (i = 0; i < tx_count; i++) {
 		tmp = json_array_get(txa, i);
 		const char *tx_hex = json_string_value(json_object_get(tmp, "data"));
@@ -652,17 +648,17 @@ static bool gbt_work_decode(const json_t *val, struct work *work)
 		work->data[9 + i] = be32dec((uint32_t *)merkle_tree[0] + i);
 	int offset = 0;
 	if (opt_algo == ALGO_LBRY) {
-        for (i = 0; i < 8; i++)
-            work->data[24 - i] = le32dec(claimtrie + i);
-        offset = 8;
-    }
-    work->data[17 + offset] = swab32(curtime);
+		for (i = 0; i < 8; i++)
+			work->data[24 - i] = le32dec(claimtrie + i);
+		offset = 8;
+	}
+	work->data[17 + offset] = swab32(curtime);
 	work->data[18 + offset] = le32dec(&bits);
-    memset(work->data + 19 + offset, 0x00, 52);
+	memset(work->data + 19 + offset, 0x00, 52);
 	work->data[20 + offset] = 0x80000000;
 	work->data[31 + offset] = 0x00000280;
 
-    if (unlikely(!jobj_binary(val, "target", target, sizeof(target)))) {
+	if (unlikely(!jobj_binary(val, "target", target, sizeof(target)))) {
 		applog(LOG_ERR, "JSON invalid target");
 		goto out;
 	}
@@ -745,8 +741,9 @@ static bool submit_upstream_work(CURL *curl, struct work *work)
 		uint32_t ntime, nonce;
 		char ntimestr[9], noncestr[9], *xnonce2str, *req;
 
-		le32enc(&ntime, work->data[17]);
-		le32enc(&nonce, work->data[19]);
+        int offset = opt_algo == ALGO_LBRY ? 8 : 0;
+		le32enc(&ntime, work->data[17 + offset]);
+		le32enc(&nonce, work->data[19 + offset]);
 		bin2hex(ntimestr, (const unsigned char *)(&ntime), 4);
 		bin2hex(noncestr, (const unsigned char *)(&nonce), 4);
 		xnonce2str = abin2hex(work->xnonce2, work->xnonce2_len);
@@ -848,14 +845,13 @@ static const char *getwork_req =
 
 #define GBT_CAPABILITIES "[\"coinbasetxn\", \"coinbasevalue\", \"longpoll\", \"workid\"]"
 #define GBT_RULES "[\"segwit\"]"
-#define GBT_NO_RULES "[]"
 
 static const char *gbt_req =
 	"{\"method\": \"getblocktemplate\", \"params\": [{\"capabilities\": "
-	GBT_CAPABILITIES ", \"rules\": " GBT_NO_RULES "}], \"id\":0}\r\n";
+	GBT_CAPABILITIES ", \"rules\": " GBT_RULES "}], \"id\":0}\r\n";
 static const char *gbt_lp_req =
 	"{\"method\": \"getblocktemplate\", \"params\": [{\"capabilities\": "
-	GBT_CAPABILITIES ", \"rules\": %s, \"longpollid\": \"%s\"}], \"id\":0}\r\n";
+	GBT_CAPABILITIES ", \"rules\": " GBT_RULES ", \"longpollid\": \"%s\"}], \"id\":0}\r\n";
 
 static bool get_upstream_work(CURL *curl, struct work *work)
 {
@@ -867,8 +863,8 @@ static bool get_upstream_work(CURL *curl, struct work *work)
 start:
 	gettimeofday(&tv_start, NULL);
 	val = json_rpc_call(curl, rpc_url, rpc_userpass,
-			    have_gbt ? gbt_req : getwork_req,
-			    &err, have_gbt ? JSON_RPC_QUIET_404 : 0);
+				have_gbt ? gbt_req : getwork_req,
+				&err, have_gbt ? JSON_RPC_QUIET_404 : 0);
 	gettimeofday(&tv_end, NULL);
 
 	if (have_stratum) {
@@ -905,7 +901,7 @@ start:
 	if (opt_debug && rc) {
 		timeval_subtract(&diff, &tv_end, &tv_start);
 		applog(LOG_DEBUG, "DEBUG: got new work in %d ms",
-		       diff.tv_sec * 1000 + diff.tv_usec / 1000);
+			   diff.tv_sec * 1000 + diff.tv_usec / 1000);
 	}
 
 	json_decref(val);
@@ -1098,7 +1094,7 @@ err_out:
 static void stratum_gen_work(struct stratum_ctx *sctx, struct work *work)
 {
 	unsigned char merkle_root[64];
-	int i;
+	int i, offset = 0;
 
 	pthread_mutex_lock(&sctx->work_lock);
 
@@ -1119,23 +1115,29 @@ static void stratum_gen_work(struct stratum_ctx *sctx, struct work *work)
 	for (i = 0; i < sctx->xnonce2_size && !++sctx->job.xnonce2[i]; i++);
 
 	/* Assemble block header */
-	memset(work->data, 0, 128);
+	memset(work->data, 0, sizeof(work->data));
 	work->data[0] = le32dec(sctx->job.version);
 	for (i = 0; i < 8; i++)
 		work->data[1 + i] = le32dec((uint32_t *)sctx->job.prevhash + i);
 	for (i = 0; i < 8; i++)
 		work->data[9 + i] = be32dec((uint32_t *)merkle_root + i);
-	work->data[17] = le32dec(sctx->job.ntime);
-	work->data[18] = le32dec(sctx->job.nbits);
-	work->data[20] = 0x80000000;
-	work->data[31] = 0x00000280;
+
+	if (sctx->job.needs_claimhash) {
+	    offset = 8;
+        for (i = 0; i < 8; i++)
+            work->data[24 - i] = le32dec((uint32_t *)sctx->job.claimhash + i);
+	}
+	work->data[17 + offset] = le32dec(sctx->job.ntime);
+	work->data[18 + offset] = le32dec(sctx->job.nbits);
+	work->data[20 + offset] = 0x80000000;
+	work->data[31 + offset] = 0x00000280;
 
 	pthread_mutex_unlock(&sctx->work_lock);
 
 	if (opt_debug) {
 		char *xnonce2str = abin2hex(work->xnonce2, work->xnonce2_len);
 		applog(LOG_DEBUG, "DEBUG: job_id='%s' extranonce2=%s ntime=%08x",
-		       work->job_id, xnonce2str, swab32(work->data[17]));
+			   work->job_id, xnonce2str, swab32(work->data[17 + offset]));
 		free(xnonce2str);
 	}
 
@@ -1146,7 +1148,7 @@ static void stratum_gen_work(struct stratum_ctx *sctx, struct work *work)
 }
 
 extern int scanhash_lbry(int thr_id, uint32_t *pdata, const uint32_t *ptarget,
-                  uint32_t max_nonce, uint64_t *hashes_done);
+				  uint32_t max_nonce, uint64_t *hashes_done);
 
 static void *miner_thread(void *userdata)
 {
@@ -1172,7 +1174,7 @@ static void *miner_thread(void *userdata)
 	if (num_processors > 1 && opt_n_threads % num_processors == 0) {
 		if (!opt_quiet)
 			applog(LOG_INFO, "Binding thread %d to cpu %d",
-			       thr_id, thr_id % num_processors);
+				   thr_id, thr_id % num_processors);
 		affine_to_cpu(thr_id, thr_id % num_processors);
 	}
 	
@@ -1204,8 +1206,8 @@ static void *miner_thread(void *userdata)
 			/* obtain new work from internal workio thread */
 			pthread_mutex_lock(&g_work_lock);
 			if (!have_stratum &&
-			    (time(NULL) - g_work_time >= min_scantime ||
-			     work.data[19 + offset] >= end_nonce)) {
+				(time(NULL) - g_work_time >= min_scantime ||
+				 work.data[19 + offset] >= end_nonce)) {
 				work_free(&g_work);
 				if (unlikely(!get_work(mythr, &g_work))) {
 					applog(LOG_ERR, "work retrieval failed, exiting "
@@ -1234,25 +1236,23 @@ static void *miner_thread(void *userdata)
 			max64 = LP_SCANTIME;
 		else
 			max64 = g_work_time + (have_longpoll ? LP_SCANTIME : opt_scantime)
-			      - time(NULL);
+				  - time(NULL);
 		max64 *= thr_hashrates[thr_id];
 		if (max64 <= 0) {
 			switch (opt_algo) {
-			case ALGO_LBRY:
-                max64 = 0x1fffff;
+			case ALGO_SCRYPT:
+				max64 = opt_scrypt_n < 16 ? 0x3ffff : 0x3fffff / opt_scrypt_n;
 				break;
-            case ALGO_SCRYPT:
-                max64 = opt_scrypt_n < 16 ? 0x3ffff : 0x3fffff / opt_scrypt_n;
-                break;
-            case ALGO_SHA256D:
-                max64 = 0x1fffff;
-                break;
-            }
+            case ALGO_LBRY:
+			case ALGO_SHA256D:
+				max64 = 0x1fffff;
+				break;
+			}
 		}
-		if (work.data[19] + max64 > end_nonce)
+		if (work.data[19 + offset] + max64 > end_nonce)
 			max_nonce = end_nonce;
 		else
-			max_nonce = work.data[19] + max64;
+			max_nonce = work.data[19 + offset] + max64;
 		
 		hashes_done = 0;
 		gettimeofday(&tv_start, NULL);
@@ -1261,18 +1261,18 @@ static void *miner_thread(void *userdata)
 		switch (opt_algo) {
 		case ALGO_LBRY:
 			rc = scanhash_lbry(thr_id, work.data, work.target,
-                               max_nonce, &hashes_done);
+							   max_nonce, &hashes_done);
 			break;
-        case ALGO_SCRYPT:
-            rc = scanhash_scrypt(thr_id, work.data, scratchbuf, work.target,
-                                 max_nonce, &hashes_done, opt_scrypt_n);
-            break;
+		case ALGO_SCRYPT:
+			rc = scanhash_scrypt(thr_id, work.data, scratchbuf, work.target,
+								 max_nonce, &hashes_done, opt_scrypt_n);
+			break;
 
-        case ALGO_SHA256D:
-            rc = scanhash_sha256d(thr_id, work.data, work.target,
-                                  max_nonce, &hashes_done);
-            break;
-        default:
+		case ALGO_SHA256D:
+			rc = scanhash_sha256d(thr_id, work.data, work.target,
+								  max_nonce, &hashes_done);
+			break;
+		default:
 			/* should never happen */
 			goto out;
 		}
@@ -1366,12 +1366,12 @@ start:
 		int err;
 
 		if (have_gbt) {
-			req = malloc(strlen(gbt_lp_req) + strlen(lp_id) + 1 + strlen(GBT_RULES));
-			sprintf(req, gbt_lp_req, want_segwit ? GBT_RULES : GBT_NO_RULES, lp_id);
+			req = malloc(strlen(gbt_lp_req) + strlen(lp_id) + 1);
+			sprintf(req, gbt_lp_req, lp_id);
 		}
 		val = json_rpc_call(curl, lp_url, rpc_userpass,
-				    req ? req : getwork_req, &err,
-				    JSON_RPC_LONGPOLL);
+					req ? req : getwork_req, &err,
+					JSON_RPC_LONGPOLL);
 		free(req);
 		if (have_stratum) {
 			if (val)
@@ -1473,8 +1473,8 @@ static void *stratum_thread(void *userdata)
 			restart_threads();
 
 			if (!stratum_connect(&stratum, stratum.url) ||
-			    !stratum_subscribe(&stratum) ||
-			    !stratum_authorize(&stratum, rpc_user, rpc_pass)) {
+				!stratum_subscribe(&stratum) ||
+				!stratum_authorize(&stratum, rpc_user, rpc_pass)) {
 				stratum_disconnect(&stratum);
 				if (opt_retries >= 0 && ++failures > opt_retries) {
 					applog(LOG_ERR, "...terminating workio thread");
@@ -1487,7 +1487,7 @@ static void *stratum_thread(void *userdata)
 		}
 
 		if (stratum.job.job_id &&
-		    (!g_work_time || strcmp(stratum.job.job_id, g_work.job_id))) {
+			(!g_work_time || strcmp(stratum.job.job_id, g_work.job_id))) {
 			pthread_mutex_lock(&g_work_lock);
 			stratum_gen_work(&stratum, &g_work);
 			time(&g_work_time);
@@ -1714,9 +1714,9 @@ static void parse_arg(int key, char *arg, char *pname)
 			hp = ap;
 		if (ap != arg) {
 			if (strncasecmp(arg, "http://", 7) &&
-			    strncasecmp(arg, "https://", 8) &&
-			    strncasecmp(arg, "stratum+tcp://", 14) &&
-			    strncasecmp(arg, "stratum+tcps://", 15)) {
+				strncasecmp(arg, "https://", 8) &&
+				strncasecmp(arg, "stratum+tcp://", 14) &&
+				strncasecmp(arg, "stratum+tcps://", 15)) {
 				fprintf(stderr, "%s: unknown protocol -- '%s'\n",
 					pname, arg);
 				show_usage_and_exit(1);
@@ -1809,9 +1809,6 @@ static void parse_arg(int key, char *arg, char *pname)
 		}
 		strcpy(coinbase_sig, arg);
 		break;
-    case 1016:
-        want_segwit = true;
-        break;
 	case 'S':
 		use_syslog = true;
 		break;
@@ -1931,9 +1928,9 @@ int main(int argc, char *argv[])
 	pthread_mutex_init(&stratum.work_lock, NULL);
 
 	flags = opt_benchmark || (strncasecmp(rpc_url, "https://", 8) &&
-	                          strncasecmp(rpc_url, "stratum+tcps://", 15))
-	      ? (CURL_GLOBAL_ALL & ~CURL_GLOBAL_SSL)
-	      : CURL_GLOBAL_ALL;
+							  strncasecmp(rpc_url, "stratum+tcps://", 15))
+		  ? (CURL_GLOBAL_ALL & ~CURL_GLOBAL_SSL)
+		  : CURL_GLOBAL_ALL;
 	if (curl_global_init(flags)) {
 		applog(LOG_ERR, "CURL initialization failed");
 		return 1;
@@ -2022,6 +2019,7 @@ int main(int argc, char *argv[])
 	}
 	if (want_stratum) {
 		/* init stratum thread info */
+		stratum.job.needs_claimhash = opt_algo == ALGO_LBRY;
 		stratum_thr_id = opt_n_threads + 2;
 		thr = &thr_info[stratum_thr_id];
 		thr->id = stratum_thr_id;

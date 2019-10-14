@@ -362,7 +362,7 @@ json_t *json_rpc_call(CURL *curl, const char *url,
 	struct curl_slist *headers = NULL;
 	char len_hdr[64];
 	char curl_err_str[CURL_ERROR_SIZE];
-	long timeout = (flags & JSON_RPC_LONGPOLL) ? opt_timeout : 30;
+	long timeout = (flags & JSON_RPC_LONGPOLL) ? opt_timeout : 70;
 	struct header_info hi = {0};
 
 	/* it is assumed that 'curl' is freshly [re]initialized at this pt */
@@ -802,7 +802,7 @@ size_t address_to_script(unsigned char *out, size_t outsz, const char *addr)
 	if (addrver < 0)
 		return 0;
 	switch (addrver) {
-		case 5:    /* Bitcoin script hash */
+		case 0x7a: /* LBRY mainnet script hash */
 		case 196:  /* Testnet script hash */
 			if (outsz < (rv = 23))
 				return rv;
@@ -1334,25 +1334,27 @@ out:
 
 static bool stratum_notify(struct stratum_ctx *sctx, json_t *params)
 {
-	const char *job_id, *prevhash, *coinb1, *coinb2, *version, *nbits, *ntime;
+	const char *job_id, *prevhash, *coinb1, *coinb2, *version, *nbits, *ntime, *claimhash;
 	size_t coinb1_size, coinb2_size;
 	bool clean, ret = false;
-	int merkle_count, i;
+	int merkle_count, i, idx = 0;
 	json_t *merkle_arr;
 	unsigned char **merkle;
 
-	job_id = json_string_value(json_array_get(params, 0));
-	prevhash = json_string_value(json_array_get(params, 1));
-	coinb1 = json_string_value(json_array_get(params, 2));
-	coinb2 = json_string_value(json_array_get(params, 3));
-	merkle_arr = json_array_get(params, 4);
+	job_id = json_string_value(json_array_get(params, idx++));
+	prevhash = json_string_value(json_array_get(params, idx++));
+	if (sctx->job.needs_claimhash)
+        claimhash = json_string_value(json_array_get(params, idx++));
+	coinb1 = json_string_value(json_array_get(params, idx++));
+	coinb2 = json_string_value(json_array_get(params, idx++));
+	merkle_arr = json_array_get(params, idx++);
 	if (!merkle_arr || !json_is_array(merkle_arr))
 		goto out;
 	merkle_count = json_array_size(merkle_arr);
-	version = json_string_value(json_array_get(params, 5));
-	nbits = json_string_value(json_array_get(params, 6));
-	ntime = json_string_value(json_array_get(params, 7));
-	clean = json_is_true(json_array_get(params, 8));
+	version = json_string_value(json_array_get(params, idx++));
+	nbits = json_string_value(json_array_get(params, idx++));
+	ntime = json_string_value(json_array_get(params, idx++));
+	clean = json_is_true(json_array_get(params, idx++));
 
 	if (!job_id || !prevhash || !coinb1 || !coinb2 || !version || !nbits || !ntime ||
 	    strlen(prevhash) != 64 || strlen(version) != 8 ||
@@ -1391,6 +1393,8 @@ static bool stratum_notify(struct stratum_ctx *sctx, json_t *params)
 	free(sctx->job.job_id);
 	sctx->job.job_id = strdup(job_id);
 	hex2bin(sctx->job.prevhash, prevhash, 32);
+	if (sctx->job.needs_claimhash)
+        hex2bin(sctx->job.claimhash, claimhash, 32);
 
 	for (i = 0; i < sctx->job.merkle_count; i++)
 		free(sctx->job.merkle[i]);
